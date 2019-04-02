@@ -20,6 +20,12 @@ func main() {
     TO_Ptr := flag.String("to", "to=2019-01-01:00:00:00", "a string")
     flag.Parse()
 
+    //for flag help and run time.
+    fmt.Println("apikey:", *API_KEY_Ptr)
+    fmt.Println("statuses:", *STATUSES_Ptr)
+    fmt.Println("from:", *FROM_Ptr)
+    fmt.Println("to", *TO_Ptr)
+
     // fmt.Println(API_KEY, STATUSES, D_FROM, d_TO)
     
     //fmt.Println(argsWithoutProg)
