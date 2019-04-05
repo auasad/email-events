@@ -3,7 +3,7 @@ A command line tool written in Golang.
 It takes the command line arguments and does the following;
   a. creates the link from the provided arguments.
   b. using the created link it hits the elastic email api and return the status of the url in JASON format.
-  3. extracts the url from the returned JASON and hits the internet to download the logs in .csv format.
+  c. extracts the url from the returned JASON and hits the internet to download the logs in .csv format.
   
   
 # How to run the Program?
