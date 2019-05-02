@@ -1,102 +1,140 @@
 package main
+
 import (
-	"fmt"
-	"os"
-	"log"
-	"net/url"
-	"net/http"
-	"io/ioutil"
-	"regexp"
-	"io"
+	"encoding/json"
 	"flag"
-	//"time"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"time"
 )
+
+const (
+	// The statuses API parameter specifies event types: 0 for all, 1 for ReadyToSend, 2 for InProgress, 4 for Bounced, 5 for Sent, 6 for Opened, 7 for Clicked, 8 for Unsubscribed, 9 for Abuse Report.
+	defaultStatuses = "4,5"
+	timeFormat      = "2006-01-02T15:04:05"
+)
+
 func main() {
 
+	// Command line parameters must be available to specify api-key, statuses and date range.
+	// There should be flags to specify yesterday, last hour, and last 5 minute interval (0-5, 5-10, ...) in addition to custom range.
+	var (
+		apiKey   string
+		statuses string
+		from     string
+		to       string
+	)
+
+	// Yesterday in local time zone converted to UTC
+	t := time.Now()
+	defaultTo := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local).UTC()
+	defaultFrom := defaultTo.AddDate(0, 0, -1)
+
 	// to take the input as a command parameters.
-    API_KEY_Ptr := flag.String("apikey", "apikey=xxx-xxx-xxxx-xxxx-xxxx", "a string")
-    STATUSES_Ptr := flag.String("statuses", "statuses=x,y or z", "a string")
-    FROM_Ptr := flag.String("from", "from=2018-01-01:00:00:00", "a string")
-    TO_Ptr := flag.String("to", "to=2019-01-01:00:00:00", "a string")
-    flag.Parse()
+	flag.StringVar(&apiKey, "apikey", "", "Elastic Email API key")
+	flag.StringVar(&statuses, "statuses", defaultStatuses, "Event types to include")
+	flag.StringVar(&from, "from", defaultFrom.Format(timeFormat), "Start time for events")
+	flag.StringVar(&to, "to", defaultTo.Format(timeFormat), "End time for events")
+	flag.Parse()
 
-    //for flag help and run time.
-    fmt.Println("apikey:", *API_KEY_Ptr)
-    fmt.Println("statuses:", *STATUSES_Ptr)
-    fmt.Println("from:", *FROM_Ptr)
-    fmt.Println("to", *TO_Ptr)
-
-    // fmt.Println(API_KEY, STATUSES, D_FROM, d_TO)
-    
-    //fmt.Println(argsWithoutProg)
-    //fmt.Println(arg)
-
-    //to generate the URL from the taken inputs.
-    u, err := url.Parse("http://bing.com/search")
-	if err != nil {
-		log.Fatal(err)
+	if apiKey == "" {
+		fmt.Fprintf(os.Stderr, "Please specify -apikey, see %s -help\n", os.Args[0])
+		os.Exit(1)
 	}
-	u.Scheme = "https"
-	u.Host = "api.elasticemail.com"
-	u.Path = "v2/log/exportevents"
-	q := u.Query()
-	q.Set("apikey", *API_KEY_Ptr)
-	q.Set("statuses", *STATUSES_Ptr)
-	q.Set("from", *FROM_Ptr)
-	q.Set("to", *TO_Ptr)
-	u.RawQuery = q.Encode()
-	fmt.Println(u)
 
-	//url := "https://api.elasticemail.com/v2/log/exportevents?apikey=3da0a60f-37a8-4363-bfd6-1cb0dbc525ee&statuses=4,5&from=2019-02-25T00:00:00&to=2019-03-03T23:59:59"
+	// creates an http client and hits the elastic email api and stores the JASON output.
+	link, err := exportEvents(apiKey, statuses, from, to)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Downloading from %s\n", link)
 
-	//creates an http client and hits the elastic email api and stores the JASON output. 
-	url := u.String()
-	req, _ := http.NewRequest("GET", url, nil)
-	res, _ := http.DefaultClient.Do(req)
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-	fmt.Println("The Status of the query is:")
-	fmt.Println(string(body))
-    myString := string(body)
-    
-    //extracts the downloadable file url from the returned JASON.
-    pat := regexp.MustCompile(`https?://.*\.csv`)
-	s := pat.FindString(myString)
-	fmt.Println("The extracted url is:")
-	fmt.Println(s)
-
-	//fileUrl := "https://api.elasticemail.com/userfile/55fa99ce-d2c7-41ad-9cad-e9d6476ba136/export/546dc7d5-bdf8-4842-917a-06b65092e347-eventslog.csv"
-	
 	//randers the downloadable file name with from and to dates.
-	fileUrl := s
-	DOWNLOADFILE_NAME := "eventslog-" + string(*FROM_Ptr) + "-" + string(*TO_Ptr)
-    // if err := DownloadFile("email-events", fileUrl); err != nil {
+	filename := "eventslog-" + from + "-" + to + ".csv"
 
-    	//calling a function that downloads the file, takes url as input and file name to be given
-       if err := DownloadFile(DOWNLOADFILE_NAME, fileUrl); err != nil {
-        panic(err)
-    }
+	//calling a function that downloads the file, takes url as input and file name to be given
+	err = downloadFile(filename, link)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 }
 
-	//function that takes file path and url and downloads the file
-	func DownloadFile(filepath string, url string) error {
+type exportInfo struct {
+	Success bool `json:"success"`
+	Data    struct {
+		Link           string `json:"link"`
+		PublicExportID string `json:"publicexportid"`
+	} `json:"data"`
+}
 
-	    // Get the data
-	    resp, err := http.Get(url)
-	    if err != nil {
-	        return err
-	    }
-	    defer resp.Body.Close()
+func exportEvents(key, statuses, from, to string) (link string, err error) {
+	// The "from" and "to" API parameters are in UTC. The "to" parameter means "up to and including".
+	q := url.Values{}
+	q.Set("apikey", key)
+	q.Set("statuses", statuses)
+	q.Set("from", from)
+	q.Set("to", to)
+	url := "https://api.elasticemail.com/v2/log/exportevents?" + q.Encode()
+	resp, err := http.Get(url)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
 
-	    // Create the file
-	    out, err := os.Create(filepath)
-	    if err != nil {
-	        return err
-	    }
-	    defer out.Close()
+	// decode json response body
+	var info exportInfo
+	err = json.NewDecoder(resp.Body).Decode(&info)
+	if err != nil {
+		return
+	}
+	if !info.Success {
+		err = fmt.Errorf("exportevents not successful") // TODO: check response body
+		return
+	}
+	link = info.Data.Link
+	return
+}
 
-	    // Write the body to file
-	    _, err = io.Copy(out, resp.Body)
-	    return err
+// function that takes file path and url and downloads the file
+func downloadFile(filepath string, url string) error {
 
+	// Poll and wait until export is available
+	var body io.Reader
+	wait := 1
+	for {
+		resp, err := http.Get(url)
+		if err != nil {
+			return err
+		}
+
+		if resp.StatusCode == 200 {
+			defer resp.Body.Close()
+			body = resp.Body
+			break
+		} else {
+			if resp.StatusCode == 404 && wait <= 32 {
+				fmt.Printf("No document yet, waiting %d seconds...\n", wait)
+				time.Sleep(time.Second * time.Duration(wait))
+				wait *= 2
+			} else {
+				return fmt.Errorf("Status %d", resp.StatusCode)
+			}
+		}
+	}
+
+	// Create the file
+	out, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// Write the body to file
+	_, err = io.Copy(out, body)
+	return err
 }
